@@ -332,7 +332,7 @@ function renderApp() {
   app.innerHTML = `
     <header class="topbar">
       <div>
-        <span class="brand__mark">诗歌舞街</span>
+        <span class="brand__mark" id="homeBtn" role="button" tabindex="0">诗歌舞街</span>
         <span class="brand__sub">粤语歌分享社区 · 试用版</span>
       </div>
       <div class="whoami">${whoamiHtml}</div>
@@ -462,6 +462,22 @@ function renderApp() {
       renderFeed();
     });
   }
+
+  document.getElementById('homeBtn').addEventListener('click', () => {
+    searchQuery = '';
+    sortMode = 'latest';
+    splitMode = 'both';
+    openComments.clear();
+    const searchInput = document.getElementById('searchInput');
+    if (searchInput) searchInput.value = '';
+    document.querySelectorAll('.sort-tab').forEach(t => t.classList.toggle('is-active', t.dataset.sort === 'latest'));
+    renderFeed();
+    applySplitMode();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+  document.getElementById('homeBtn').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); document.getElementById('homeBtn').click(); }
+  });
 
   document.getElementById('searchInput').addEventListener('input', (e) => {
     searchQuery = e.target.value;
