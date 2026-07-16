@@ -129,11 +129,15 @@ function saveGuestNickname(name) { localStorage.setItem('sgwj_guest_nickname', n
 
 /* ============ 数据读取 ============ */
 async function loadProfiles() {
-  const { data, error } = await sb.from('profiles').select('id, display_name, emoji, color');
+  const { data, error } = await sb.from('profiles').select('id, display_name, emoji, color, now_playing_text, now_playing_url, now_playing_updated_at');
   if (error) { console.error(error); return; }
   profilesMap = {};
   (data || []).forEach(p => {
-    profilesMap[p.id] = { id: p.id, name: p.display_name, emoji: p.emoji, color: p.color };
+    profilesMap[p.id] = {
+      id: p.id, name: p.display_name, emoji: p.emoji, color: p.color,
+      nowPlayingText: p.now_playing_text, nowPlayingUrl: p.now_playing_url,
+      nowPlayingUpdatedAt: p.now_playing_updated_at
+    };
   });
 }
 
@@ -156,6 +160,46 @@ function commentDisplay(c) {
   }
   const acc = findAccount(c.actor_id);
   return acc || { name: c.actor_id, emoji: '🎵', color: '#eee' };
+}
+
+/* ============ 而家听紧：判断状态是否仲新鲜（3日内） ============ */
+function getFreshNowPlaying(acc) {
+  if (!acc || !acc.nowPlayingText || !acc.nowPlayingUpdatedAt) return null;
+  const threeDaysAgo = Date.now() - 3 * 24 * 3600 * 1000;
+  if (new Date(acc.nowPlayingUpdatedAt).getTime() < threeDaysAgo) return null;
+  return { text: acc.nowPlayingText, url: acc.nowPlayingUrl };
+}
+
+/* ============ 渲染：个人状态弹窗（点头像） ============ */
+function renderProfilePopup(accId) {
+  const acc = findAccount(accId);
+  if (!acc) return;
+  const np = getFreshNowPlaying(acc);
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-card profile-popup">
+      <div class="profile-popup__head">
+        <span class="avatar avatar--lg" style="background:${acc.color}">${acc.emoji}</span>
+        <h3>${escapeHtml(acc.name)}</h3>
+      </div>
+      ${np ? `
+        <div class="profile-popup__np">
+          <span class="np-label">🎧 而家听紧</span>
+          ${np.url
+            ? `<a href="${escapeHtml(np.url)}" target="_blank" rel="noopener">${escapeHtml(np.text)}</a>`
+            : `<span>${escapeHtml(np.text)}</span>`}
+        </div>
+      ` : `<p class="profile-popup__empty">而家未设置紧听咩歌</p>`}
+      <div class="modal-actions">
+        <button class="btn btn--ghost" id="profilePopupClose">关闭</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.getElementById('profilePopupClose').addEventListener('click', close);
 }
 
 /* ============ 渲染：登录页 ============ */
@@ -429,6 +473,14 @@ function renderAccountModal() {
         <label for="confirmPwdInput">确认新密码</label>
         <input type="password" id="confirmPwdInput">
       </div>
+      <div class="field">
+        <label for="npTextInput">🎧 而家听紧咩歌（唔填就唔显示）</label>
+        <input type="text" id="npTextInput" value="${escapeHtml(acc && acc.nowPlayingText ? acc.nowPlayingText : '')}" maxlength="60" placeholder="例如：喜欢你 - Beyond">
+      </div>
+      <div class="field">
+        <label for="npUrlInput">链接（可选，畀人一齐听）</label>
+        <input type="url" id="npUrlInput" value="${escapeHtml(acc && acc.nowPlayingUrl ? acc.nowPlayingUrl : '')}" placeholder="https://music.163.com/... 或 YouTube 链接">
+      </div>
       <p class="modal-error" id="accountModalError"></p>
       <div class="modal-actions">
         <button class="btn btn--ghost" id="accountCancelBtn">取消</button>
@@ -449,6 +501,8 @@ function renderAccountModal() {
     const curPwd = document.getElementById('curPwdInput').value;
     const newPwd = document.getElementById('newPwdInput').value;
     const confirmPwd = document.getElementById('confirmPwdInput').value;
+    const npText = document.getElementById('npTextInput').value.trim();
+    const npUrl = document.getElementById('npUrlInput').value.trim();
 
     if (!newName) { errEl.textContent = '昵称唔可以留空'; return; }
 
@@ -468,8 +522,13 @@ function renderAccountModal() {
       if (pwdErr) { errEl.textContent = '密码更新失败：' + pwdErr.message; saveBtn.disabled = false; return; }
     }
 
-    const { error: nameErr } = await sb.from('profiles').update({ display_name: newName }).eq('id', currentUserId);
-    if (nameErr) { errEl.textContent = '昵称更新失败：' + nameErr.message; saveBtn.disabled = false; return; }
+    const { error: nameErr } = await sb.from('profiles').update({
+      display_name: newName,
+      now_playing_text: npText || null,
+      now_playing_url: npText ? (npUrl || null) : null,
+      now_playing_updated_at: npText ? new Date().toISOString() : null
+    }).eq('id', currentUserId);
+    if (nameErr) { errEl.textContent = '资料更新失败：' + nameErr.message; saveBtn.disabled = false; return; }
 
     await loadProfiles();
     close();
@@ -537,6 +596,7 @@ function renderFeed() {
 function buildCardHtml(post, highlight) {
   const acc = findAccount(post.author_id) || { emoji: '🎵', color: '#eee', name: post.author_id };
   const liked = post.likedBy.includes(getActiveActorId());
+  const np = getFreshNowPlaying(acc);
   const commentsHtml = post.comments
     .map(c => {
       const cd = commentDisplay(c);
@@ -551,10 +611,11 @@ function buildCardHtml(post, highlight) {
     <article class="card" data-id="${post.id}">
       ${highlight ? '<span class="hot-badge">🔥 热门</span>' : ''}
       <header class="card__head">
-        <span class="avatar" style="background:${acc.color}">${acc.emoji}</span>
+        <span class="avatar" style="background:${acc.color}" data-action="view-profile" data-account="${acc.id || ''}">${acc.emoji}</span>
         <div class="card__who">
-          <span class="card__author">${escapeHtml(acc.name)}</span>
+          <span class="card__author" data-action="view-profile" data-account="${acc.id || ''}">${escapeHtml(acc.name)}</span>
           <span class="card__time">${formatRelativeTime(post.created_at)}</span>
+          ${np ? `<span class="card__np">🎧 ${escapeHtml(np.text)}</span>` : ''}
         </div>
       </header>
       <p class="card__text">${escapeHtml(post.text)}</p>
@@ -582,6 +643,13 @@ function attachCardHandlers() {
     const postId = card.dataset.id;
     const post = posts.find(p => p.id === postId);
     if (!post) return;
+
+    card.querySelectorAll('[data-action="view-profile"]').forEach(el => {
+      const accId = el.dataset.account;
+      if (!accId) return;
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => renderProfilePopup(accId));
+    });
 
     card.querySelector('[data-action="like"]').addEventListener('click', async () => {
       const actorId = getActiveActorId();
