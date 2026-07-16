@@ -32,6 +32,7 @@ const ACCOUNT_SLOTS = [
 /* ============ 状态 ============ */
 let currentUserId = null;    // Supabase auth 嘅 uid
 let currentEmail = null;
+let currentLastSignInAt = null;
 let currentMode = 'account'; // 'account' | 'guest'
 let guestId = null;
 let guestNickname = '';
@@ -39,6 +40,7 @@ let posts = [];
 let profilesMap = {};        // id -> {id, name, emoji, color}
 let searchQuery = '';
 let sortMode = 'latest';     // 'latest' | 'hot' | 'comments'
+let splitMode = 'both';      // 'both' | 'left-only' | 'right-only'
 const openComments = new Set();
 
 function getActiveActorId() {
@@ -71,6 +73,12 @@ function formatRelativeTime(ts) {
   if (day < 7) return `${day} 日前`;
   const d = new Date(t);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function formatAbsoluteTime(ts) {
+  if (!ts) return '未知';
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 function escapeHtml(str) {
@@ -238,6 +246,7 @@ function renderLogin(errorMsg) {
     currentMode = 'account';
     currentUserId = data.user.id;
     currentEmail = data.user.email;
+    currentLastSignInAt = data.user.last_sign_in_at;
     await loadProfiles();
     posts = await loadPosts();
     renderApp();
@@ -264,7 +273,11 @@ function renderApp() {
         <button class="btn btn--ghost btn--small" id="loginSwitchBtn">登录</button>
   ` : `
         <span>${acc ? acc.emoji : '🎵'}</span>
-        <span class="whoami__name">${escapeHtml(acc ? acc.name : '')}</span>
+        <div class="whoami__col">
+          <span class="whoami__name">${escapeHtml(acc ? acc.name : '')}</span>
+          <span class="whoami__lastlogin">上次登录：${formatAbsoluteTime(currentLastSignInAt)}</span>
+        </div>
+        <button class="btn btn--ghost btn--small" id="npBtn">🎧 而家听紧</button>
         <button class="btn btn--ghost btn--small" id="accountBtn">⚙️ 账号</button>
         <button class="btn btn--ghost btn--small" id="logoutBtn">登出</button>
   `;
@@ -308,6 +321,14 @@ function renderApp() {
       </section>
   `;
 
+  const rightPanelHtml = isGuest ? `
+      <p class="empty" style="padding:30px 0;">游客身份冇发帖记录</p>
+  ` : `
+      ${composerHtml}
+      <h2 class="own-posts__title">📝 我发过嘅帖</h2>
+      <div class="feed" id="ownPostsList"></div>
+  `;
+
   app.innerHTML = `
     <header class="topbar">
       <div>
@@ -316,19 +337,24 @@ function renderApp() {
       </div>
       <div class="whoami">${whoamiHtml}</div>
     </header>
-    <main class="stage">
-      ${composerHtml}
-      <section class="recommend" id="recommendSection" hidden></section>
-      <section class="toolbar">
-        <input type="search" id="searchInput" class="search" placeholder="搵歌名、内容，或者边位讲过嘅…">
-        <div class="sort-tabs" id="sortTabs">
-          <button type="button" class="sort-tab is-active" data-sort="latest">最新</button>
-          <button type="button" class="sort-tab" data-sort="hot">最热</button>
-          <button type="button" class="sort-tab" data-sort="comments">最多回复</button>
+    <main class="stage-split">
+      <div class="split-layout" id="splitLayout">
+        <div class="split-left" id="splitLeft">
+          <section class="recommend" id="recommendSection" hidden></section>
+          <section class="toolbar">
+            <input type="search" id="searchInput" class="search" placeholder="搵歌名、内容，或者边位讲过嘅…">
+            <div class="sort-tabs" id="sortTabs">
+              <button type="button" class="sort-tab is-active" data-sort="latest">最新</button>
+              <button type="button" class="sort-tab" data-sort="hot">最热</button>
+              <button type="button" class="sort-tab" data-sort="comments">最多回复</button>
+            </div>
+          </section>
+          <section class="feed" id="feed"></section>
+          <p class="empty" id="emptyState" hidden></p>
         </div>
-      </section>
-      <section class="feed" id="feed"></section>
-      <p class="empty" id="emptyState" hidden></p>
+        <div class="split-divider" id="splitDivider"></div>
+        <div class="split-right" id="splitRight">${rightPanelHtml}</div>
+      </div>
     </main>
   `;
 
@@ -347,6 +373,10 @@ function renderApp() {
 
     document.getElementById('accountBtn').addEventListener('click', () => {
       renderAccountModal();
+    });
+
+    document.getElementById('npBtn').addEventListener('click', () => {
+      renderNowPlayingModal();
     });
 
     let activeMediaType = 'none';
@@ -447,9 +477,10 @@ function renderApp() {
   });
 
   renderFeed();
+  applySplitMode();
 }
 
-/* ============ 渲染：账号设置弹窗 ============ */
+/* ============ 渲染：账号设置弹窗（改昵称 / 改密码 子菜单） ============ */
 function renderAccountModal() {
   const acc = findAccount(currentUserId);
   const overlay = document.createElement('div');
@@ -457,29 +488,29 @@ function renderAccountModal() {
   overlay.innerHTML = `
     <div class="modal-card">
       <h3>账号设置</h3>
-      <div class="field">
-        <label for="loginNameInput">昵称（其他人会睇到呢个名）</label>
-        <input type="text" id="loginNameInput" value="${escapeHtml(acc ? acc.name : '')}" maxlength="20">
+      <div class="account-tabs">
+        <button type="button" class="account-tab is-active" data-tab="name">📝 改昵称</button>
+        <button type="button" class="account-tab" data-tab="password">🔒 改密码</button>
       </div>
-      <div class="field">
-        <label for="curPwdInput">当前密码</label>
-        <input type="password" id="curPwdInput" placeholder="要改密码先至要填">
+      <div class="account-tab-panel" data-panel="name">
+        <div class="field">
+          <label for="loginNameInput">昵称（其他人会睇到呢个名）</label>
+          <input type="text" id="loginNameInput" value="${escapeHtml(acc ? acc.name : '')}" maxlength="20">
+        </div>
       </div>
-      <div class="field">
-        <label for="newPwdInput">新密码</label>
-        <input type="password" id="newPwdInput" placeholder="唔改密码就留空">
-      </div>
-      <div class="field">
-        <label for="confirmPwdInput">确认新密码</label>
-        <input type="password" id="confirmPwdInput">
-      </div>
-      <div class="field">
-        <label for="npTextInput">🎧 而家听紧咩歌（唔填就唔显示）</label>
-        <input type="text" id="npTextInput" value="${escapeHtml(acc && acc.nowPlayingText ? acc.nowPlayingText : '')}" maxlength="60" placeholder="例如：喜欢你 - Beyond">
-      </div>
-      <div class="field">
-        <label for="npUrlInput">链接（可选，畀人一齐听）</label>
-        <input type="url" id="npUrlInput" value="${escapeHtml(acc && acc.nowPlayingUrl ? acc.nowPlayingUrl : '')}" placeholder="https://music.163.com/... 或 YouTube 链接">
+      <div class="account-tab-panel" data-panel="password" hidden>
+        <div class="field">
+          <label for="curPwdInput">当前密码</label>
+          <input type="password" id="curPwdInput" placeholder="要改密码先至要填">
+        </div>
+        <div class="field">
+          <label for="newPwdInput">新密码</label>
+          <input type="password" id="newPwdInput" placeholder="唔改密码就留空">
+        </div>
+        <div class="field">
+          <label for="confirmPwdInput">确认新密码</label>
+          <input type="password" id="confirmPwdInput">
+        </div>
       </div>
       <p class="modal-error" id="accountModalError"></p>
       <div class="modal-actions">
@@ -494,6 +525,16 @@ function renderAccountModal() {
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
   document.getElementById('accountCancelBtn').addEventListener('click', close);
 
+  overlay.querySelectorAll('.account-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      overlay.querySelectorAll('.account-tab').forEach(t => t.classList.remove('is-active'));
+      tab.classList.add('is-active');
+      overlay.querySelectorAll('.account-tab-panel').forEach(panel => {
+        panel.hidden = panel.dataset.panel !== tab.dataset.tab;
+      });
+    });
+  });
+
   document.getElementById('accountSaveBtn').addEventListener('click', async () => {
     const errEl = document.getElementById('accountModalError');
     const saveBtn = document.getElementById('accountSaveBtn');
@@ -501,8 +542,6 @@ function renderAccountModal() {
     const curPwd = document.getElementById('curPwdInput').value;
     const newPwd = document.getElementById('newPwdInput').value;
     const confirmPwd = document.getElementById('confirmPwdInput').value;
-    const npText = document.getElementById('npTextInput').value.trim();
-    const npUrl = document.getElementById('npUrlInput').value.trim();
 
     if (!newName) { errEl.textContent = '昵称唔可以留空'; return; }
 
@@ -522,19 +561,109 @@ function renderAccountModal() {
       if (pwdErr) { errEl.textContent = '密码更新失败：' + pwdErr.message; saveBtn.disabled = false; return; }
     }
 
-    const { error: nameErr } = await sb.from('profiles').update({
-      display_name: newName,
-      now_playing_text: npText || null,
-      now_playing_url: npText ? (npUrl || null) : null,
-      now_playing_updated_at: npText ? new Date().toISOString() : null
-    }).eq('id', currentUserId);
-    if (nameErr) { errEl.textContent = '资料更新失败：' + nameErr.message; saveBtn.disabled = false; return; }
+    const { error: nameErr } = await sb.from('profiles').update({ display_name: newName }).eq('id', currentUserId);
+    if (nameErr) { errEl.textContent = '昵称更新失败：' + nameErr.message; saveBtn.disabled = false; return; }
 
     await loadProfiles();
     close();
     showToast('已经更新咗');
     renderApp();
   });
+}
+
+/* ============ 渲染：而家听紧弹窗（独立于账号设置） ============ */
+function renderNowPlayingModal() {
+  const acc = findAccount(currentUserId);
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-card">
+      <h3>🎧 而家听紧</h3>
+      <div class="field">
+        <label for="npTextInput">而家听紧咩歌（唔填就唔显示）</label>
+        <input type="text" id="npTextInput" value="${escapeHtml(acc && acc.nowPlayingText ? acc.nowPlayingText : '')}" maxlength="60" placeholder="例如：喜欢你 - Beyond">
+      </div>
+      <div class="field">
+        <label for="npUrlInput">链接（可选，畀人一齐听）</label>
+        <input type="url" id="npUrlInput" value="${escapeHtml(acc && acc.nowPlayingUrl ? acc.nowPlayingUrl : '')}" placeholder="https://open.spotify.com/track/... 或其他分享链接">
+      </div>
+      <p class="modal-error" id="npModalError"></p>
+      <div class="modal-actions">
+        <button class="btn btn--ghost" id="npCancelBtn">取消</button>
+        <button class="btn btn--primary" id="npSaveBtn" style="width:auto;">保存</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.getElementById('npCancelBtn').addEventListener('click', close);
+
+  document.getElementById('npSaveBtn').addEventListener('click', async () => {
+    const errEl = document.getElementById('npModalError');
+    const npText = document.getElementById('npTextInput').value.trim();
+    const npUrl = document.getElementById('npUrlInput').value.trim();
+
+    const { error } = await sb.from('profiles').update({
+      now_playing_text: npText || null,
+      now_playing_url: npText ? (npUrl || null) : null,
+      now_playing_updated_at: npText ? new Date().toISOString() : null
+    }).eq('id', currentUserId);
+    if (error) { errEl.textContent = '更新失败：' + error.message; return; }
+
+    await loadProfiles();
+    close();
+    showToast('已经更新咗');
+    renderFeed();
+  });
+}
+
+/* ============ 左右分栏：折叠/展开 ============ */
+function applySplitMode() {
+  const layout = document.getElementById('splitLayout');
+  const left = document.getElementById('splitLeft');
+  const right = document.getElementById('splitRight');
+  const divider = document.getElementById('splitDivider');
+  if (!layout || !left || !right || !divider) return;
+
+  layout.classList.remove('mode-left-only', 'mode-right-only');
+  left.classList.toggle('is-hidden', splitMode === 'right-only');
+  right.classList.toggle('is-hidden', splitMode === 'left-only');
+
+  if (splitMode === 'left-only') {
+    layout.classList.add('mode-left-only');
+    divider.innerHTML = `<button type="button" class="divider-btn" data-action="show-both" title="显示返两边">▶</button>`;
+  } else if (splitMode === 'right-only') {
+    layout.classList.add('mode-right-only');
+    divider.innerHTML = `<button type="button" class="divider-btn" data-action="show-both" title="显示返两边">◀</button>`;
+  } else {
+    divider.innerHTML = `
+      <button type="button" class="divider-btn" data-action="show-left-only" title="净係睇左边">◀</button>
+      <button type="button" class="divider-btn" data-action="show-right-only" title="净係睇右边">▶</button>
+    `;
+  }
+
+  divider.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const action = btn.dataset.action;
+      if (action === 'show-left-only') splitMode = 'left-only';
+      else if (action === 'show-right-only') splitMode = 'right-only';
+      else splitMode = 'both';
+      applySplitMode();
+    });
+  });
+}
+
+/* ============ 右边栏：我发过嘅帖 ============ */
+function renderOwnPosts() {
+  const el = document.getElementById('ownPostsList');
+  if (!el) return;
+  const own = posts
+    .filter(p => p.author_id === currentUserId)
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  el.innerHTML = own.length
+    ? own.map(p => buildCardHtml(p)).join('')
+    : `<p class="empty" style="padding:20px 0;">你仲未发过帖</p>`;
 }
 
 /* ============ 推荐 / 搜索 / 排序 ============ */
@@ -590,6 +719,7 @@ function renderFeed() {
     emptyState.textContent = posts.length ? '搵唔到相关嘅内容，试下第啲关键字。' : '呢度仲静静哋，做第一个分享嘅人啦。';
   }
   feedEl.innerHTML = list.map(post => buildCardHtml(post)).join('');
+  if (currentMode === 'account') renderOwnPosts();
   attachCardHandlers();
 }
 
@@ -597,10 +727,17 @@ function buildCardHtml(post, highlight) {
   const acc = findAccount(post.author_id) || { emoji: '🎵', color: '#eee', name: post.author_id };
   const liked = post.likedBy.includes(getActiveActorId());
   const np = getFreshNowPlaying(acc);
+  const isOwnPost = currentMode === 'account' && post.author_id === currentUserId;
   const commentsHtml = post.comments
     .map(c => {
       const cd = commentDisplay(c);
-      return `<li class="comment"><span class="comment__author">${escapeHtml(cd.name)}：</span><span>${escapeHtml(c.text)}</span><span class="comment__time">${formatRelativeTime(c.created_at)}</span></li>`;
+      const isOwnComment = (c.actor_type === 'account' && currentMode === 'account' && c.actor_id === currentUserId)
+        || (c.actor_type === 'guest' && currentMode === 'guest' && c.actor_id === guestId);
+      return `<li class="comment" data-comment-id="${c.id}">
+        <span class="comment__author">${escapeHtml(cd.name)}：</span><span>${escapeHtml(c.text)}</span>
+        <span class="comment__time">${formatRelativeTime(c.created_at)}</span>
+        ${isOwnComment ? `<button type="button" class="comment__delete" data-action="delete-comment" data-comment-id="${c.id}" title="删除留言">✕</button>` : ''}
+      </li>`;
     })
     .join('');
   const isOpen = openComments.has(post.id);
@@ -615,8 +752,11 @@ function buildCardHtml(post, highlight) {
         <div class="card__who">
           <span class="card__author" data-action="view-profile" data-account="${acc.id || ''}">${escapeHtml(acc.name)}</span>
           <span class="card__time">${formatRelativeTime(post.created_at)}</span>
-          ${np ? `<span class="card__np">🎧 ${escapeHtml(np.text)}</span>` : ''}
+          ${np ? (np.url
+            ? `<a class="card__np" href="${escapeHtml(np.url)}" target="_blank" rel="noopener">🎧 ${escapeHtml(np.text)}</a>`
+            : `<span class="card__np">🎧 ${escapeHtml(np.text)}</span>`) : ''}
         </div>
+        ${isOwnPost ? `<button type="button" class="post-delete" data-action="delete-post" title="删除帖">🗑️</button>` : ''}
       </header>
       <p class="card__text">${escapeHtml(post.text)}</p>
       ${renderMediaEmbed(post)}
@@ -649,6 +789,28 @@ function attachCardHandlers() {
       if (!accId) return;
       el.style.cursor = 'pointer';
       el.addEventListener('click', () => renderProfilePopup(accId));
+    });
+
+    const deletePostBtn = card.querySelector('[data-action="delete-post"]');
+    if (deletePostBtn) {
+      deletePostBtn.addEventListener('click', async () => {
+        if (!confirm('确定要删除呢个帖吗？删咗就冇得返转头。')) return;
+        const { error } = await sb.from('posts').delete().eq('id', post.id);
+        if (error) { showToast('删除失败：' + error.message); return; }
+        posts = await loadPosts();
+        renderFeed();
+      });
+    }
+
+    card.querySelectorAll('[data-action="delete-comment"]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('确定要删除呢条留言？')) return;
+        const commentId = btn.dataset.commentId;
+        const { error } = await sb.from('comments').delete().eq('id', commentId);
+        if (error) { showToast('删除失败：' + error.message); return; }
+        posts = await loadPosts();
+        renderFeed();
+      });
     });
 
     card.querySelector('[data-action="like"]').addEventListener('click', async () => {
@@ -702,6 +864,7 @@ function attachCardHandlers() {
     currentMode = 'account';
     currentUserId = session.user.id;
     currentEmail = session.user.email;
+    currentLastSignInAt = session.user.last_sign_in_at;
     await loadProfiles();
     posts = await loadPosts();
     renderApp();
