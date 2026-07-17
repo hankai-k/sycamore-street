@@ -41,6 +41,7 @@ let profilesMap = {};        // id -> {id, name, emoji, color}
 let searchQuery = '';
 let sortMode = 'latest';     // 'latest' | 'hot' | 'comments'
 let splitMode = 'both';      // 'both' | 'left-only' | 'right-only'
+let currentView = 'feed';    // 'feed' | 'songs'
 const openComments = new Set();
 
 function getActiveActorId() {
@@ -137,16 +138,68 @@ function saveGuestNickname(name) { localStorage.setItem('sgwj_guest_nickname', n
 
 /* ============ 数据读取 ============ */
 async function loadProfiles() {
-  const { data, error } = await sb.from('profiles').select('id, display_name, emoji, color, now_playing_text, now_playing_url, now_playing_updated_at');
+  const { data, error } = await sb.from('profiles').select('id, display_name, emoji, color, now_playing_text, now_playing_url, now_playing_updated_at, role');
   if (error) { console.error(error); return; }
   profilesMap = {};
   (data || []).forEach(p => {
     profilesMap[p.id] = {
       id: p.id, name: p.display_name, emoji: p.emoji, color: p.color,
       nowPlayingText: p.now_playing_text, nowPlayingUrl: p.now_playing_url,
-      nowPlayingUpdatedAt: p.now_playing_updated_at
+      nowPlayingUpdatedAt: p.now_playing_updated_at, role: p.role || 'member'
     };
   });
+}
+
+function isModOrAdmin() {
+  if (currentMode !== 'account') return false;
+  const acc = findAccount(currentUserId);
+  return !!acc && (acc.role === 'moderator' || acc.role === 'admin');
+}
+
+/* ============ 公告栏 ============ */
+async function loadAnnouncement() {
+  const { data, error } = await sb.from('announcements').select('*').eq('id', 1).single();
+  if (error) { console.error(error); return null; }
+  return data;
+}
+async function saveAnnouncement(content) {
+  const { error } = await sb.from('announcements').update({
+    content, updated_by: currentUserId, updated_at: new Date().toISOString()
+  }).eq('id', 1);
+  return !error;
+}
+
+/* ============ 新歌排行榜 ============ */
+async function loadChart() {
+  const { data, error } = await sb.from('chart_entries').select('*').order('rank', { ascending: true });
+  if (error) { console.error(error); return []; }
+  return data || [];
+}
+async function saveChart(entries) {
+  await sb.from('chart_entries').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+  if (entries.length) {
+    const rows = entries.map((e, i) => ({
+      rank: i + 1, title: e.title, singer: e.singer || null,
+      composer: e.composer || null, lyricist: e.lyricist || null
+    }));
+    const { error } = await sb.from('chart_entries').insert(rows);
+    if (error) return false;
+  }
+  return true;
+}
+
+/* ============ 歌曲资料库 ============ */
+async function searchSongs(query) {
+  const q = query.trim();
+  if (!q) return [];
+  const { data, error } = await sb
+    .from('songs')
+    .select('*')
+    .or(`title.ilike.%${q}%,singer.ilike.%${q}%,composer.ilike.%${q}%`)
+    .order('year', { ascending: false })
+    .limit(60);
+  if (error) { console.error(error); return []; }
+  return data || [];
 }
 
 async function loadPosts() {
@@ -278,6 +331,7 @@ function renderApp() {
           <span class="whoami__lastlogin">上次登录：${formatAbsoluteTime(currentLastSignInAt)}</span>
         </div>
         <button class="btn btn--ghost btn--small" id="npBtn">🎧 而家听紧</button>
+        ${isModOrAdmin() ? `<button class="btn btn--ghost btn--small" id="adminPanelBtn">👥 账号管理</button>` : ''}
         <button class="btn btn--ghost btn--small" id="accountBtn">⚙️ 账号</button>
         <button class="btn btn--ghost btn--small" id="logoutBtn">登出</button>
   `;
@@ -335,25 +389,37 @@ function renderApp() {
         <span class="brand__mark" id="homeBtn" role="button" tabindex="0">诗歌舞街</span>
         <span class="brand__sub">粤语歌分享社区 · 试用版</span>
       </div>
-      <div class="whoami">${whoamiHtml}</div>
+      <div class="whoami">
+        <button class="btn btn--ghost btn--small" id="songsNavBtn">🎵 歌曲资料库</button>
+        ${whoamiHtml}
+      </div>
     </header>
-    <main class="stage-split">
-      <div class="split-layout" id="splitLayout">
-        <div class="split-left" id="splitLeft">
-          <section class="recommend" id="recommendSection" hidden></section>
-          <section class="toolbar">
-            <input type="search" id="searchInput" class="search" placeholder="搵歌名、内容，或者边位讲过嘅…">
-            <div class="sort-tabs" id="sortTabs">
-              <button type="button" class="sort-tab is-active" data-sort="latest">最新</button>
-              <button type="button" class="sort-tab" data-sort="hot">最热</button>
-              <button type="button" class="sort-tab" data-sort="comments">最多回复</button>
-            </div>
-          </section>
-          <section class="feed" id="feed"></section>
-          <p class="empty" id="emptyState" hidden></p>
+    <main class="stage-split" id="mainStage">
+      <section class="announcement" id="announcementSection" hidden></section>
+      <section class="chart" id="chartSection" hidden></section>
+      <div id="feedView">
+        <div class="split-layout" id="splitLayout">
+          <div class="split-left" id="splitLeft">
+            <section class="recommend" id="recommendSection" hidden></section>
+            <section class="toolbar">
+              <input type="search" id="searchInput" class="search" placeholder="搵歌名、内容，或者边位讲过嘅…">
+              <div class="sort-tabs" id="sortTabs">
+                <button type="button" class="sort-tab is-active" data-sort="latest">最新</button>
+                <button type="button" class="sort-tab" data-sort="hot">最热</button>
+                <button type="button" class="sort-tab" data-sort="comments">最多回复</button>
+              </div>
+            </section>
+            <section class="feed" id="feed"></section>
+            <p class="empty" id="emptyState" hidden></p>
+          </div>
+          <div class="split-divider" id="splitDivider"></div>
+          <div class="split-right" id="splitRight">${rightPanelHtml}</div>
         </div>
-        <div class="split-divider" id="splitDivider"></div>
-        <div class="split-right" id="splitRight">${rightPanelHtml}</div>
+      </div>
+      <div id="songsView" hidden>
+        <h2 class="songs__title">🎵 歌曲资料库 · 林夕填词作品</h2>
+        <input type="search" id="songsSearchInput" class="search" placeholder="搵歌名或者歌手…（例如：陈奕迅、K歌之王）">
+        <div class="songs__list" id="songsList"></div>
       </div>
     </main>
   `;
@@ -378,6 +444,11 @@ function renderApp() {
     document.getElementById('npBtn').addEventListener('click', () => {
       renderNowPlayingModal();
     });
+
+    const adminPanelBtn = document.getElementById('adminPanelBtn');
+    if (adminPanelBtn) {
+      adminPanelBtn.addEventListener('click', () => renderAdminPanel());
+    }
 
     let activeMediaType = 'none';
     let pendingImageData = '';
@@ -463,7 +534,14 @@ function renderApp() {
     });
   }
 
+  document.getElementById('songsNavBtn').addEventListener('click', () => {
+    currentView = currentView === 'songs' ? 'feed' : 'songs';
+    applyView();
+  });
+
   document.getElementById('homeBtn').addEventListener('click', () => {
+    currentView = 'feed';
+    applyView();
     searchQuery = '';
     sortMode = 'latest';
     splitMode = 'both';
@@ -483,6 +561,17 @@ function renderApp() {
     searchQuery = e.target.value;
     renderFeed();
   });
+
+  const songsSearchInput = document.getElementById('songsSearchInput');
+  let songsSearchTimer = null;
+  songsSearchInput.addEventListener('input', (e) => {
+    clearTimeout(songsSearchTimer);
+    const q = e.target.value;
+    songsSearchTimer = setTimeout(async () => {
+      const results = await searchSongs(q);
+      renderSongsList(results, q);
+    }, 300);
+  });
   document.querySelectorAll('.sort-tab').forEach(tab => {
     tab.addEventListener('click', () => {
       document.querySelectorAll('.sort-tab').forEach(t => t.classList.remove('is-active'));
@@ -494,6 +583,9 @@ function renderApp() {
 
   renderFeed();
   applySplitMode();
+  renderAnnouncement();
+  renderChart();
+  applyView();
 }
 
 /* ============ 渲染：账号设置弹窗（改昵称 / 改密码 子菜单） ============ */
@@ -632,6 +724,259 @@ function renderNowPlayingModal() {
     showToast('已经更新咗');
     renderFeed();
   });
+}
+
+/* ============ 账号管理面板（版主/管理员） ============ */
+function renderAdminPanel() {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-card admin-panel">
+      <h3>👥 账号管理</h3>
+      <div class="admin-panel__list" id="adminPanelList">加载緊…</div>
+      <div class="modal-actions">
+        <button class="btn btn--ghost" id="adminPanelClose">关闭</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.getElementById('adminPanelClose').addEventListener('click', close);
+  loadAndRenderAdminList();
+}
+
+const ROLE_LABELS = { member: '会员', moderator: '版主', admin: '管理员' };
+
+async function loadAndRenderAdminList() {
+  const listEl = document.getElementById('adminPanelList');
+  if (!listEl) return;
+  const { data, error } = await sb.from('profiles').select('id, display_name, role').order('display_name');
+  if (error) { listEl.innerHTML = '读取失败：' + escapeHtml(error.message); return; }
+
+  const myAcc = findAccount(currentUserId);
+  const myRole = myAcc ? myAcc.role : 'member';
+
+  listEl.innerHTML = (data || []).map(p => {
+    const isSelf = p.id === currentUserId;
+    const canEdit = myRole === 'moderator' || (myRole === 'admin' && p.role === 'member');
+    const roleLabel = ROLE_LABELS[p.role] || p.role;
+
+    if (!canEdit) {
+      return `
+        <div class="admin-row">
+          <span class="admin-row__name">${escapeHtml(p.display_name)}${isSelf ? '（你）' : ''}</span>
+          <span class="admin-row__role-badge">${roleLabel}</span>
+        </div>`;
+    }
+
+    const options = myRole === 'moderator' ? ['member', 'moderator', 'admin'] : ['member', 'admin'];
+    return `
+      <div class="admin-row">
+        <span class="admin-row__name">${escapeHtml(p.display_name)}${isSelf ? '（你）' : ''}</span>
+        <select class="admin-row__select" data-id="${p.id}" data-current="${p.role}">
+          ${options.map(o => `<option value="${o}" ${o === p.role ? 'selected' : ''}>${ROLE_LABELS[o]}</option>`).join('')}
+        </select>
+      </div>`;
+  }).join('');
+
+  listEl.querySelectorAll('.admin-row__select').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      const id = sel.dataset.id;
+      const newRole = sel.value;
+      const newLabel = ROLE_LABELS[newRole];
+      if (!confirm(`确定要将呢个账户身份改做「${newLabel}」？`)) {
+        sel.value = sel.dataset.current;
+        return;
+      }
+      const { error } = await sb.from('profiles').update({ role: newRole }).eq('id', id);
+      if (error) { showToast('修改失败：' + error.message); sel.value = sel.dataset.current; return; }
+      showToast('身份已更新');
+      sel.dataset.current = newRole;
+      await loadProfiles();
+      if (id === currentUserId) renderApp();
+    });
+  });
+}
+
+/* ============ 视图切换：首页 / 歌曲资料库 ============ */
+function applyView() {
+  const feedView = document.getElementById('feedView');
+  const songsView = document.getElementById('songsView');
+  const announcementSection = document.getElementById('announcementSection');
+  const chartSection = document.getElementById('chartSection');
+  if (!feedView || !songsView) return;
+  const showSongs = currentView === 'songs';
+  feedView.hidden = showSongs;
+  songsView.hidden = !showSongs;
+  if (announcementSection) announcementSection.hidden = showSongs;
+  if (chartSection) chartSection.hidden = showSongs;
+}
+
+/* ============ 公告栏渲染 ============ */
+async function renderAnnouncement() {
+  const el = document.getElementById('announcementSection');
+  if (!el) return;
+  const data = await loadAnnouncement();
+  if (!data) { el.hidden = true; return; }
+  el.hidden = false;
+  el.innerHTML = `
+    <div class="announcement__box">
+      <span class="announcement__label">📣 公告</span>
+      <p class="announcement__text">${escapeHtml(data.content)}</p>
+      ${isModOrAdmin() ? `<button type="button" class="btn btn--ghost btn--small announcement__edit" id="editAnnouncementBtn">✏️ 编辑</button>` : ''}
+    </div>
+  `;
+  const editBtn = document.getElementById('editAnnouncementBtn');
+  if (editBtn) editBtn.addEventListener('click', () => renderAnnouncementModal(data.content));
+}
+
+function renderAnnouncementModal(currentContent) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-card">
+      <h3>📣 编辑公告</h3>
+      <div class="field">
+        <label for="announcementInput">公告内容</label>
+        <textarea id="announcementInput" rows="4" maxlength="300">${escapeHtml(currentContent)}</textarea>
+      </div>
+      <p class="modal-error" id="announcementError"></p>
+      <div class="modal-actions">
+        <button class="btn btn--ghost" id="announcementCancelBtn">取消</button>
+        <button class="btn btn--primary" id="announcementSaveBtn" style="width:auto;">保存</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.getElementById('announcementCancelBtn').addEventListener('click', close);
+  document.getElementById('announcementSaveBtn').addEventListener('click', async () => {
+    const text = document.getElementById('announcementInput').value.trim();
+    const ok = await saveAnnouncement(text);
+    if (!ok) { document.getElementById('announcementError').textContent = '保存失败，试多次'; return; }
+    close();
+    showToast('公告已更新');
+    renderAnnouncement();
+  });
+}
+
+/* ============ 排行榜渲染 ============ */
+async function renderChart() {
+  const el = document.getElementById('chartSection');
+  if (!el) return;
+  const entries = await loadChart();
+  el.hidden = false;
+  el.innerHTML = `
+    <div class="chart__box">
+      <div class="chart__head">
+        <h2 class="chart__title">🏆 新歌排行榜</h2>
+        ${isModOrAdmin() ? `<button type="button" class="btn btn--ghost btn--small" id="editChartBtn">✏️ 管理</button>` : ''}
+      </div>
+      ${entries.length ? `
+        <ol class="chart__list">
+          ${entries.map(e => `
+            <li class="chart__item">
+              <span class="chart__rank">${e.rank}</span>
+              <div class="chart__info">
+                <span class="chart__song">${escapeHtml(e.title)}</span>
+                <span class="chart__meta">${escapeHtml(e.singer || '')}${e.composer ? ' · 作曲 ' + escapeHtml(e.composer) : ''}${e.lyricist ? ' · 作词 ' + escapeHtml(e.lyricist) : ''}</span>
+              </div>
+            </li>
+          `).join('')}
+        </ol>
+      ` : `<p class="empty" style="padding:16px 0;">排行榜仲未设置</p>`}
+    </div>
+  `;
+  const editBtn = document.getElementById('editChartBtn');
+  if (editBtn) editBtn.addEventListener('click', () => renderChartModal(entries));
+}
+
+function renderChartModal(entries) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-card chart-modal">
+      <h3>🏆 管理排行榜</h3>
+      <div class="chart-modal__rows" id="chartRows"></div>
+      <button type="button" class="btn btn--ghost btn--small" id="chartAddRowBtn" style="margin-bottom:12px;">+ 加一首</button>
+      <p class="modal-error" id="chartError"></p>
+      <div class="modal-actions">
+        <button class="btn btn--ghost" id="chartCancelBtn">取消</button>
+        <button class="btn btn--primary" id="chartSaveBtn" style="width:auto;">保存</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  const rowsEl = overlay.querySelector('#chartRows');
+
+  function addRow(data) {
+    const row = document.createElement('div');
+    row.className = 'chart-row';
+    row.innerHTML = `
+      <input type="text" class="cr-title" placeholder="歌名" value="${escapeHtml(data?.title || '')}">
+      <input type="text" class="cr-singer" placeholder="歌手" value="${escapeHtml(data?.singer || '')}">
+      <input type="text" class="cr-composer" placeholder="作曲" value="${escapeHtml(data?.composer || '')}">
+      <input type="text" class="cr-lyricist" placeholder="作词" value="${escapeHtml(data?.lyricist || '')}">
+      <button type="button" class="cr-remove" title="删除">✕</button>
+    `;
+    row.querySelector('.cr-remove').addEventListener('click', () => row.remove());
+    rowsEl.appendChild(row);
+  }
+  if (entries.length) entries.forEach(addRow); else addRow();
+
+  overlay.querySelector('#chartAddRowBtn').addEventListener('click', () => addRow());
+
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector('#chartCancelBtn').addEventListener('click', close);
+
+  overlay.querySelector('#chartSaveBtn').addEventListener('click', async () => {
+    const rows = [...rowsEl.querySelectorAll('.chart-row')].map(row => ({
+      title: row.querySelector('.cr-title').value.trim(),
+      singer: row.querySelector('.cr-singer').value.trim(),
+      composer: row.querySelector('.cr-composer').value.trim(),
+      lyricist: row.querySelector('.cr-lyricist').value.trim()
+    })).filter(r => r.title);
+
+    const ok = await saveChart(rows);
+    if (!ok) { overlay.querySelector('#chartError').textContent = '保存失败，试多次'; return; }
+    close();
+    showToast('排行榜已更新');
+    renderChart();
+  });
+}
+
+/* ============ 歌曲资料库渲染 ============ */
+function renderSongsList(results, query) {
+  const el = document.getElementById('songsList');
+  if (!el) return;
+  if (!query.trim()) {
+    el.innerHTML = `<p class="empty" style="padding:30px 0;">输入歌名或者歌手开始搜索（资料库有3458首林夕填词作品）</p>`;
+    return;
+  }
+  if (!results.length) {
+    el.innerHTML = `<p class="empty" style="padding:30px 0;">搵唔到相关嘅歌</p>`;
+    return;
+  }
+  el.innerHTML = `
+    <table class="songs-table">
+      <thead><tr><th>年份</th><th>歌名</th><th>歌手</th><th>作曲</th><th>地区</th><th>语言</th></tr></thead>
+      <tbody>
+        ${results.map(s => `
+          <tr>
+            <td>${escapeHtml(s.year || '')}</td>
+            <td>${escapeHtml(s.title || '')}</td>
+            <td>${escapeHtml(s.singer || '')}</td>
+            <td>${escapeHtml(s.composer || '')}</td>
+            <td>${escapeHtml(s.region || '')}</td>
+            <td>${escapeHtml(s.language || '')}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
 }
 
 /* ============ 左右分栏：折叠/展开 ============ */

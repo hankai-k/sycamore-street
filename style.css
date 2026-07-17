@@ -111,7 +111,23 @@
   .whoami__name { font-weight: 700; font-size: 0.88rem; }
   .whoami__lastlogin { font-family: var(--font-mono); font-size: 0.65rem; color: var(--ink-soft); }
 
-  /* ---------- 账号设置子菜单标签 ---------- */
+  /* ---------- 账号管理面板 ---------- */
+  .admin-panel { max-width: 420px; }
+  .admin-panel__list { display: flex; flex-direction: column; gap: 6px; max-height: 360px; overflow-y: auto; margin-bottom: 16px; }
+  .admin-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 12px; border-radius: var(--radius-sm); background: var(--cream);
+    gap: 10px;
+  }
+  .admin-row__name { font-size: 0.88rem; font-weight: 600; }
+  .admin-row__select {
+    font-family: var(--font-body); font-size: 0.82rem; padding: 5px 10px;
+    border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink);
+  }
+  .admin-row__role-badge {
+    font-size: 0.78rem; color: var(--ink-soft); background: #fff;
+    padding: 4px 12px; border-radius: 999px; border: 1px solid var(--line);
+  }
   .account-tabs { display: flex; gap: 8px; margin-bottom: 16px; border-bottom: 1px solid var(--line); }
   .account-tab {
     font-family: var(--font-body); font-size: 0.86rem; font-weight: 600;
@@ -146,6 +162,56 @@
   .split-layout.mode-left-only .split-left { flex: 1 1 100%; max-width: 100%; }
   .split-layout.mode-right-only .split-right { flex: 1 1 100%; max-width: 100%; padding-left: 0; }
   .own-posts__title { font-family: var(--font-display); font-size: 1.3rem; color: var(--coral-dark); margin: 24px 0 12px; }
+
+  /* ---------- 公告栏 ---------- */
+  .announcement { margin-bottom: 20px; }
+  .announcement__box {
+    background: var(--peach); border-radius: var(--radius); padding: 16px 20px;
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  }
+  .announcement__label { font-family: var(--font-display); font-size: 1.1rem; color: var(--coral-dark); flex-shrink: 0; }
+  .announcement__text { flex: 1; font-size: 0.92rem; margin: 0; min-width: 200px; }
+  .announcement__edit { flex-shrink: 0; }
+
+  /* ---------- 新歌排行榜 ---------- */
+  .chart { margin-bottom: 24px; }
+  .chart__box { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 22px; box-shadow: 0 6px 18px var(--shadow); }
+  .chart__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .chart__title { font-family: var(--font-display); font-size: 1.3rem; color: var(--coral-dark); margin: 0; }
+  .chart__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .chart__item { display: flex; align-items: center; gap: 12px; }
+  .chart__rank {
+    font-family: var(--font-mono); font-weight: 700; color: var(--teal);
+    width: 24px; text-align: center; flex-shrink: 0;
+  }
+  .chart__info { display: flex; flex-direction: column; }
+  .chart__song { font-weight: 700; font-size: 0.92rem; }
+  .chart__meta { font-size: 0.76rem; color: var(--ink-soft); }
+
+  .chart-modal { max-width: 560px; }
+  .chart-modal__rows { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; max-height: 340px; overflow-y: auto; }
+  .chart-row { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr auto; gap: 6px; align-items: center; }
+  .chart-row input {
+    font-family: var(--font-body); font-size: 0.82rem; padding: 7px 9px;
+    border-radius: 8px; border: 1px solid var(--line);
+  }
+  .cr-remove { background: none; border: none; cursor: pointer; color: var(--ink-soft); font-size: 0.9rem; }
+  .cr-remove:hover { color: var(--coral-dark); }
+
+  /* ---------- 歌曲资料库 ---------- */
+  .songs__title { font-family: var(--font-display); font-size: 1.6rem; color: var(--coral-dark); margin: 0 0 16px; }
+  .songs-table { width: 100%; border-collapse: collapse; margin-top: 16px; background: var(--card); border-radius: var(--radius); overflow: hidden; }
+  @media (max-width: 640px) {
+    #songsList { overflow-x: auto; }
+    .songs-table { min-width: 640px; }
+    .chart-row { grid-template-columns: 1fr 1fr; grid-template-areas: "title singer" "composer lyricist" "remove remove"; }
+  }
+  .songs-table th {
+    text-align: left; font-size: 0.78rem; color: var(--ink-soft); font-weight: 600;
+    padding: 10px 14px; border-bottom: 2px solid var(--line); background: var(--cream);
+  }
+  .songs-table td { padding: 9px 14px; font-size: 0.86rem; border-bottom: 1px solid var(--line); }
+  .songs-table tr:last-child td { border-bottom: none; }
 
   @media (max-width: 860px) {
     .split-layout { flex-direction: column; }
