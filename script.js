@@ -189,13 +189,32 @@ async function saveChart(entries) {
 }
 
 /* ============ 歌曲资料库 ============ */
+/* ============ 简繁转换（畀简体用户都可以搜到繁体资料） ============ */
+let s2tConverter = null;
+function getS2TConverter() {
+  if (!s2tConverter && window.OpenCC) {
+    s2tConverter = window.OpenCC.Converter({ from: 'cn', to: 't' });
+  }
+  return s2tConverter;
+}
+
 async function searchSongs(query) {
   const q = query.trim();
   if (!q) return [];
+  const converter = getS2TConverter();
+  const qTraditional = converter ? converter(q) : q;
+
+  const orParts = [
+    `title.ilike.%${q}%`, `singer.ilike.%${q}%`, `composer.ilike.%${q}%`
+  ];
+  if (qTraditional !== q) {
+    orParts.push(`title.ilike.%${qTraditional}%`, `singer.ilike.%${qTraditional}%`, `composer.ilike.%${qTraditional}%`);
+  }
+
   const { data, error } = await sb
     .from('songs')
     .select('*')
-    .or(`title.ilike.%${q}%,singer.ilike.%${q}%,composer.ilike.%${q}%`)
+    .or(orParts.join(','))
     .order('year', { ascending: false })
     .limit(60);
   if (error) { console.error(error); return []; }
