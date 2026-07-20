@@ -340,14 +340,18 @@ function renderApp() {
   const acc = isGuest ? null : findAccount(currentUserId);
 
   const whoamiHtml = isGuest ? `
-        <span>🙂</span>
-        <span class="whoami__name">游客浏览中</span>
+        <div class="whoami__id">
+          <span>🙂</span>
+          <span class="whoami__name">游客浏览中</span>
+        </div>
         <button class="btn btn--ghost btn--small" id="loginSwitchBtn">登录</button>
   ` : `
-        <span>${acc ? acc.emoji : '🎵'}</span>
-        <div class="whoami__col">
-          <span class="whoami__name">${escapeHtml(acc ? acc.name : '')}</span>
-          <span class="whoami__lastlogin">上次登录：${formatAbsoluteTime(currentLastSignInAt)}</span>
+        <div class="whoami__id">
+          <span>${acc ? acc.emoji : '🎵'}</span>
+          <div class="whoami__col">
+            <span class="whoami__name">${escapeHtml(acc ? acc.name : '')}</span>
+            <span class="whoami__lastlogin">上次登录：${formatAbsoluteTime(currentLastSignInAt)}</span>
+          </div>
         </div>
         <button class="btn btn--ghost btn--small" id="npBtn">🎧 而家听紧</button>
         ${isModOrAdmin() ? `<button class="btn btn--ghost btn--small" id="adminPanelBtn">👥 账号管理</button>` : ''}
@@ -708,11 +712,17 @@ function renderNowPlayingModal() {
       <h3>🎧 而家听紧</h3>
       <div class="field">
         <label for="npTextInput">而家听紧咩歌（唔填就唔显示）</label>
-        <input type="text" id="npTextInput" value="${escapeHtml(acc && acc.nowPlayingText ? acc.nowPlayingText : '')}" maxlength="60" placeholder="例如：喜欢你 - Beyond">
+        <div class="input-with-clear">
+          <input type="text" id="npTextInput" value="${escapeHtml(acc && acc.nowPlayingText ? acc.nowPlayingText : '')}" maxlength="60" placeholder="例如：喜欢你 - Beyond">
+          <button type="button" class="input-clear-btn" data-clear="npTextInput" title="清空">✕</button>
+        </div>
       </div>
       <div class="field">
         <label for="npUrlInput">链接（可选，畀人一齐听）</label>
-        <input type="url" id="npUrlInput" value="${escapeHtml(acc && acc.nowPlayingUrl ? acc.nowPlayingUrl : '')}" placeholder="https://open.spotify.com/track/... 或其他分享链接">
+        <div class="input-with-clear">
+          <input type="url" id="npUrlInput" value="${escapeHtml(acc && acc.nowPlayingUrl ? acc.nowPlayingUrl : '')}" placeholder="https://open.spotify.com/track/... 或其他分享链接">
+          <button type="button" class="input-clear-btn" data-clear="npUrlInput" title="清空">✕</button>
+        </div>
       </div>
       <p class="modal-error" id="npModalError"></p>
       <div class="modal-actions">
@@ -725,6 +735,13 @@ function renderNowPlayingModal() {
   const close = () => overlay.remove();
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
   document.getElementById('npCancelBtn').addEventListener('click', close);
+
+  overlay.querySelectorAll('.input-clear-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const input = document.getElementById(btn.dataset.clear);
+      if (input) { input.value = ''; input.focus(); }
+    });
+  });
 
   document.getElementById('npSaveBtn').addEventListener('click', async () => {
     const errEl = document.getElementById('npModalError');
@@ -1107,12 +1124,13 @@ function buildCardHtml(post, highlight) {
   const acc = findAccount(post.author_id) || { emoji: '🎵', color: '#eee', name: post.author_id };
   const liked = post.likedBy.includes(getActiveActorId());
   const np = getFreshNowPlaying(acc);
-  const isOwnPost = currentMode === 'account' && post.author_id === currentUserId;
+  const isOwnPost = currentMode === 'account' && (post.author_id === currentUserId || isModOrAdmin());
   const commentsHtml = post.comments
     .map(c => {
       const cd = commentDisplay(c);
       const isOwnComment = (c.actor_type === 'account' && currentMode === 'account' && c.actor_id === currentUserId)
-        || (c.actor_type === 'guest' && currentMode === 'guest' && c.actor_id === guestId);
+        || (c.actor_type === 'guest' && currentMode === 'guest' && c.actor_id === guestId)
+        || (currentMode === 'account' && isModOrAdmin());
       return `<li class="comment" data-comment-id="${c.id}">
         <span class="comment__author">${escapeHtml(cd.name)}：</span><span>${escapeHtml(c.text)}</span>
         <span class="comment__time">${formatRelativeTime(c.created_at)}</span>
@@ -1249,6 +1267,11 @@ function attachCardHandlers() {
     posts = await loadPosts();
     renderApp();
   } else {
-    renderLogin();
+    currentMode = 'guest';
+    guestId = loadOrCreateGuestId();
+    guestNickname = loadGuestNickname();
+    await loadProfiles();
+    posts = await loadPosts();
+    renderApp();
   }
 })();
